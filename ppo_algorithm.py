@@ -23,7 +23,7 @@ class PPOMemory:
         return (np.array(self.states), np.array(self.actions), np.array(self.probs),
                 np.array(self.vals), np.array(self.rewards), np.array(self.dones), batches)
 
-    def store_memory(self, state, action, probs, vals, reward, done): # store the memory for each trajectory
+    def add_memory(self, state, action, probs, vals, reward, done): # store the memory for each trajectory
         self.states.append(state)
         self.actions.append(action)
         self.probs.append(probs)
@@ -107,7 +107,7 @@ class Agent(AgentConfig):
         self.memory = PPOMemory(self.batch_size)
 
     def store_transition(self, state, action, probs, vals, reward, done):
-        self.memory.store_memory(state, action, probs, vals, reward, done)
+        self.memory.add_memory(state, action, probs, vals, reward, done)
 
     def select_action(self, observation):
         state = T.tensor([observation], dtype=T.float).to(self.actor.device)
@@ -124,7 +124,7 @@ class Agent(AgentConfig):
         return action, log_prob, critic_value
 
 
-    def learn(self):
+    def train(self):
         for _ in range(self.n_epochs):
             # Retrieve batches of data from memory
             states, actions, old_probs, values, rewards, dones, batches = self.memory.generate_batches()
