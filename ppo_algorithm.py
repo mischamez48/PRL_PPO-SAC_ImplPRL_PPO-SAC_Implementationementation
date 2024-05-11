@@ -86,7 +86,7 @@ class AgentConfig:
     eps_clip = 0.2
     batch_size = 5
     n_epochs = 4
-    vf_coef = 1
+    vf_coef = 0.5
     entropy_coef = 0.01
     target_kl_div = 0.01
 
@@ -192,7 +192,7 @@ def plot_learning_curve(x, scores, figure_file):
 
 if __name__ == '__main__':
     env = gym.make('CartPole-v0')
-    N = 20
+    N = 25
     batch_size=8
     agent = Agent(n_actions=env.action_space.n, input_dims=env.observation_space.shape, actor_alpha=3e-4, critic_alpha=1e-3)
 
