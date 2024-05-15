@@ -6,7 +6,8 @@ import torch as T
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions.categorical import Categorical
+from torch.distributions import Normal
+from sklearn.preprocessing import StandardScaler
 
 class PPOMemory:
     def __init__(self, batch_size):
@@ -40,29 +41,34 @@ class PPOMemory:
         self.vals = []
 
 class ActorNetwork(nn.Module):
-    def __init__(self, n_actions, input_dims, actor_alpha, n_epochs, gamma, fc1_dims=128, fc2_dims=128):
+    def __init__(self, n_actions, input_dims, actor_alpha, n_epochs, gamma, fc1_dims=256, fc2_dims=256):
         super(ActorNetwork, self).__init__()
 
         self.fc1 = nn.Linear(*input_dims, fc1_dims)
         self.fc2 = nn.Linear(fc1_dims, fc2_dims)
-        self.fc3 = nn.Linear(fc2_dims, n_actions)
-        self.softmax = nn.Softmax(dim=-1)
+        self.mu = nn.Linear(fc2_dims, n_actions)
+        self.sigma = nn.Linear(fc2_dims, n_actions)
         self.optimizer = optim.Adam(self.parameters(), lr=actor_alpha)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=n_epochs, gamma=gamma)
         self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
         self.to(self.device)
 
-
     def forward(self, state):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        dist = self.softmax(x)
-        dist = Categorical(dist)
-        return dist
+        mu = self.mu(x)
+        sigma = T.clamp(self.sigma(x), min=1e-3, max=1.0)
+        return mu, sigma
+
+    def sample_action(self, state):
+        mu, sigma = self.forward(state)
+        dist = Normal(mu, sigma)
+        action = dist.sample()
+        action_log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        return action, action_log_prob, dist
 
 class CriticNetwork(nn.Module):
-    def __init__(self, input_dims, critic_alpha, n_epochs, gamma, fc1_dims=128, fc2_dims=128):
+    def __init__(self, input_dims, critic_alpha, n_epochs, gamma, fc1_dims=256, fc2_dims=256):
         super(CriticNetwork, self).__init__()
 
         self.fc1 = nn.Linear(*input_dims, fc1_dims)
@@ -78,17 +84,19 @@ class CriticNetwork(nn.Module):
         x = F.relu(self.fc2(x))
         value = self.fc3(x)
         return value
-    
+
 class AgentConfig:
-    gamma = 0.99
-    alpha = 0.0003
+    gamma = 0.9
+    alpha = 0.0001
     gae_lambda = 0.95
     eps_clip = 0.2
-    batch_size = 5
-    n_epochs = 4
+    batch_size = 64
+    n_epochs = 128
     vf_coef = 0.5
     entropy_coef = 0.01
     target_kl_div = 0.01
+    reward_scale = 0.1
+    gradient_clip = 0.5
 
 class Agent(AgentConfig):
     def __init__(self, n_actions, input_dims, actor_alpha, critic_alpha):
@@ -97,25 +105,25 @@ class Agent(AgentConfig):
         self.actor = ActorNetwork(n_actions, input_dims, actor_alpha, self.n_epochs, self.gamma)
         self.critic = CriticNetwork(input_dims, critic_alpha, self.n_epochs, self.gamma)
         self.memory = PPOMemory(self.batch_size)
+        self.scaler = StandardScaler()
 
     def store_transition(self, state, action, probs, vals, reward, done):
         self.memory.add_memory(state, action, probs, vals, reward, done)
 
     def select_action(self, observation):
-        state = T.tensor([observation], dtype=T.float).to(self.actor.device)
+        observation = self.scaler.transform([observation])
+        state = T.tensor(observation, dtype=T.float).to(self.actor.device)
         
-        action_distribution = self.actor(state)
+        action, action_log_prob, _ = self.actor.sample_action(state)
         critic_value = self.critic(state)
-        action = action_distribution.sample()
-
-        log_prob = T.squeeze(action_distribution.log_prob(action)).item()
-        action = T.squeeze(action).item()
-        critic_value = T.squeeze(critic_value).item()
         
-        return action, log_prob, critic_value
+        action_np = action.cpu().detach().numpy()[0]
+        action_log_prob_np = action_log_prob.cpu().detach().numpy()[0]
+        critic_value_np = critic_value.cpu().detach().numpy()[0]
+        
+        return action_np, action_log_prob_np, critic_value_np
 
-
-    def train(self,target_kl_div=0.01):
+    def train(self, target_kl_div=0.01):
         for _ in range(self.n_epochs):
             states, actions, old_probs, values, rewards, dones, batches = self.memory.generate_batches()
             advantages = self.calculate_advantages(rewards, values, dones)
@@ -127,8 +135,9 @@ class Agent(AgentConfig):
 
                 # Compute KL divergence and break if it exceeds the target
                 old_log_probs = T.tensor(old_probs[batch]).to(self.actor.device)
-                dist = self.actor(states_batch)
-                new_log_probs = dist.log_prob(actions_batch)
+                mu, sigma = self.actor(states_batch)
+                dist = Normal(mu, sigma)
+                new_log_probs = dist.log_prob(actions_batch).sum(axis=-1, keepdim=True)
                 kl_div = (old_log_probs - new_log_probs).mean()
                 if kl_div >= target_kl_div:
                     break
@@ -150,35 +159,36 @@ class Agent(AgentConfig):
 
     def compute_losses(self, batch, states, actions, old_probs, values, advantages):
         states_batch = T.tensor(states[batch], dtype=T.float).to(self.actor.device)
-        old_probs_batch = T.tensor(old_probs[batch]).to(self.actor.device)
-        actions_batch = T.tensor(actions[batch]).to(self.actor.device)  # Define actions_batch here
+        old_probs_batch = T.tensor(old_probs[batch], dtype=T.float).to(self.actor.device)
+        actions_batch = T.tensor(actions[batch], dtype=T.float).to(self.actor.device)
 
-        dist = self.actor(states_batch)
+        mu, sigma = self.actor(states_batch)
+        dist = Normal(mu, sigma)
         critic_value = self.critic(states_batch).squeeze()
 
-        new_probs = dist.log_prob(actions_batch)
-        prob_ratio = (new_probs.exp() / old_probs_batch.exp()).unsqueeze(1)
+        new_probs = dist.log_prob(actions_batch).sum(axis=-1, keepdim=True)
+        prob_ratio = (new_probs.exp() / old_probs_batch.exp())
         weighted_probs = advantages[batch] * prob_ratio
         weighted_clipped_probs = T.clamp(prob_ratio,
-                                        1-self.eps_clip,
-                                        1+self.eps_clip) * advantages[batch]
+                                         1-self.eps_clip,
+                                         1+self.eps_clip) * advantages[batch]
         clip_loss = -T.min(weighted_probs, weighted_clipped_probs).mean()
 
-        returns = advantages[batch] + self.gamma * values[batch]
-        vf_loss = 0.5*((returns - critic_value) ** 2).mean()
+        returns = advantages[batch] + values[batch]
+        vf_loss = 0.5 * ((returns - critic_value) ** 2).mean()
 
         entropy = dist.entropy().mean()
 
         total_loss = clip_loss + self.vf_coef * vf_loss - self.entropy_coef * entropy
-        return total_loss, states_batch, actions_batch  # return states_batch and actions_batch for use in train function
-
-
+        return total_loss, states_batch, actions_batch
 
     def update_networks(self, total_loss):
         self.actor.optimizer.zero_grad()
         self.critic.optimizer.zero_grad()
         
         total_loss.backward()
+        nn.utils.clip_grad_norm_(self.actor.parameters(), self.gradient_clip)
+        nn.utils.clip_grad_norm_(self.critic.parameters(), self.gradient_clip)
         self.actor.optimizer.step()
         self.critic.optimizer.step()
 
@@ -191,21 +201,35 @@ def plot_learning_curve(x, scores, figure_file):
     plt.savefig(figure_file)
 
 if __name__ == '__main__':
-    env = gym.make("CartPole-v1")
-    N = 25
-    batch_size=7
-    agent = Agent(n_actions=env.action_space.n, input_dims=env.observation_space.shape, actor_alpha=3e-4, critic_alpha=1e-3)
+    env = gym.make("Pendulum-v1")
+    N = 300
+    batch_size = 128
+    agent = Agent(n_actions=env.action_space.shape[0], input_dims=env.observation_space.shape, actor_alpha=1e-4, critic_alpha=1e-3)
 
     n_games = 300
+    figure_file = 'plots/pendulum.png'
 
-    figure_file = 'plots/cartpoleV0.png'
-
-    best_score = env.reward_range[0]
+    best_score = -np.inf
     score_history = []
 
     learn_iters = 0
     avg_score = 0
     n_steps = 0
+
+    # Collect initial observations to fit scaler
+    observation = env.reset()
+    initial_states = []
+    for _ in range(10000):
+        action = env.action_space.sample()
+        observation_, reward, done, info = env.step(action)
+        initial_states.append(observation)
+        if done:
+            observation = env.reset()
+        else:
+            observation = observation_
+
+    initial_states = np.array(initial_states)
+    agent.scaler.fit(initial_states)
 
     for i in range(n_games):
         observation = env.reset()
@@ -213,10 +237,11 @@ if __name__ == '__main__':
         score = 0
         while not done:
             action, prob, val = agent.select_action(observation)
+            action = np.clip(action, env.action_space.low, env.action_space.high)
             observation_, reward, done, info = env.step(action)
             n_steps += 1
             score += reward
-            agent.store_transition(observation, action, prob, val, reward, done)
+            agent.store_transition(observation, action, prob, val, reward * agent.reward_scale, done)  # Adjust reward scaling
             if n_steps % N == 0:
                 agent.train()
                 learn_iters += 1
@@ -228,6 +253,6 @@ if __name__ == '__main__':
             best_score = avg_score
 
         print('episode', i, 'score %.1f' % score, 'avg score %.1f' % avg_score,
-                'time_steps', n_steps, 'learning_steps', learn_iters)
+              'time_steps', n_steps, 'learning_steps', learn_iters)
     x = [i+1 for i in range(len(score_history))]
     plot_learning_curve(x, score_history, figure_file)
