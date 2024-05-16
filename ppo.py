@@ -46,7 +46,7 @@ class PPOMemory:
 
 
 class ContinuousActor(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim1 = 128, hidden_dim2=128):
+    def __init__(self, in_dim, out_dim, hidden_dim1 = 64, hidden_dim2=64):
         super(ContinuousActor, self).__init__()
         
         self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
