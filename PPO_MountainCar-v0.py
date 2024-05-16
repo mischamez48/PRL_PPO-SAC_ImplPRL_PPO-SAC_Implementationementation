@@ -6,7 +6,7 @@ import torch as T
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions.categorical import Categorical
+from torch.distributions.normal import Normal
 
 class PPOMemory:
     def __init__(self, batch_size):
@@ -45,21 +45,19 @@ class ActorNetwork(nn.Module):
 
         self.fc1 = nn.Linear(*input_dims, fc1_dims)
         self.fc2 = nn.Linear(fc1_dims, fc2_dims)
-        self.fc3 = nn.Linear(fc2_dims, n_actions)
-        self.softmax = nn.Softmax(dim=-1)
+        self.mu = nn.Linear(fc2_dims, n_actions)
+        self.sigma = nn.Linear(fc2_dims, n_actions)
         self.optimizer = optim.Adam(self.parameters(), lr=actor_alpha)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=n_epochs, gamma=gamma)
         self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
         self.to(self.device)
 
-
     def forward(self, state):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        dist = self.softmax(x)
-        dist = Categorical(dist)
-        return dist
+        mu = self.mu(x)
+        sigma = T.clamp(self.sigma(x), min=1e-3, max=1.0)  # Ensure positive std dev
+        return mu, sigma
 
 class CriticNetwork(nn.Module):
     def __init__(self, input_dims, critic_alpha, n_epochs, gamma, fc1_dims=128, fc2_dims=128):
@@ -78,7 +76,7 @@ class CriticNetwork(nn.Module):
         x = F.relu(self.fc2(x))
         value = self.fc3(x)
         return value
-    
+
 class AgentConfig:
     gamma = 0.99
     alpha = 0.0003
@@ -104,18 +102,17 @@ class Agent(AgentConfig):
     def select_action(self, observation):
         state = T.tensor([observation], dtype=T.float).to(self.actor.device)
         
-        action_distribution = self.actor(state)
-        critic_value = self.critic(state)
-        action = action_distribution.sample()
-
-        log_prob = T.squeeze(action_distribution.log_prob(action)).item()
-        action = T.squeeze(action).item()
-        critic_value = T.squeeze(critic_value).item()
+        mu, sigma = self.actor(state)
+        dist = Normal(mu, sigma)
+        action = dist.sample()
+        action_log_prob = dist.log_prob(action).sum()
+        value = self.critic(state)
         
-        return action, log_prob, critic_value
+        action = T.tanh(action)  # To bound the actions between -1 and 1 for Pendulum
 
+        return action.cpu().detach().numpy()[0], action_log_prob.cpu().detach().numpy(), value.cpu().detach().numpy()
 
-    def train(self,target_kl_div=0.01):
+    def train(self, target_kl_div=0.01):
         for _ in range(self.n_epochs):
             states, actions, old_probs, values, rewards, dones, batches = self.memory.generate_batches()
             advantages = self.calculate_advantages(rewards, values, dones)
@@ -127,8 +124,8 @@ class Agent(AgentConfig):
 
                 # Compute KL divergence and break if it exceeds the target
                 old_log_probs = T.tensor(old_probs[batch]).to(self.actor.device)
-                dist = self.actor(states_batch)
-                new_log_probs = dist.log_prob(actions_batch)
+                dist = Normal(*self.actor(states_batch))
+                new_log_probs = dist.log_prob(actions_batch).sum(1)
                 kl_div = (old_log_probs - new_log_probs).mean()
                 if kl_div >= target_kl_div:
                     break
@@ -151,12 +148,12 @@ class Agent(AgentConfig):
     def compute_losses(self, batch, states, actions, old_probs, values, advantages):
         states_batch = T.tensor(states[batch], dtype=T.float).to(self.actor.device)
         old_probs_batch = T.tensor(old_probs[batch]).to(self.actor.device)
-        actions_batch = T.tensor(actions[batch]).to(self.actor.device)  # Define actions_batch here
+        actions_batch = T.tensor(actions[batch]).to(self.actor.device)
 
-        dist = self.actor(states_batch)
+        dist = Normal(*self.actor(states_batch))
         critic_value = self.critic(states_batch).squeeze()
 
-        new_probs = dist.log_prob(actions_batch)
+        new_probs = dist.log_prob(actions_batch).sum(1)
         prob_ratio = (new_probs.exp() / old_probs_batch.exp()).unsqueeze(1)
         weighted_probs = advantages[batch] * prob_ratio
         weighted_clipped_probs = T.clamp(prob_ratio,
@@ -170,9 +167,7 @@ class Agent(AgentConfig):
         entropy = dist.entropy().mean()
 
         total_loss = clip_loss + self.vf_coef * vf_loss - self.entropy_coef * entropy
-        return total_loss, states_batch, actions_batch  # return states_batch and actions_batch for use in train function
-
-
+        return total_loss, states_batch, actions_batch
 
     def update_networks(self, total_loss):
         self.actor.optimizer.zero_grad()
@@ -191,14 +186,14 @@ def plot_learning_curve(x, scores, figure_file):
     plt.savefig(figure_file)
 
 if __name__ == '__main__':
-    env = gym.make("CartPole-v1")
+    env = gym.make("Pendulum-v1")
     N = 25
     batch_size=7
-    agent = Agent(n_actions=env.action_space.n, input_dims=env.observation_space.shape, actor_alpha=3e-4, critic_alpha=1e-3)
+    agent = Agent(n_actions=env.action_space.shape[0], input_dims=env.observation_space.shape, actor_alpha=3e-4, critic_alpha=1e-5)
 
-    n_games = 300
+    n_games = 500
 
-    figure_file = 'plots/cartpoleV0.png'
+    figure_file = 'plots/pendulumV1.png'
 
     best_score = env.reward_range[0]
     score_history = []
