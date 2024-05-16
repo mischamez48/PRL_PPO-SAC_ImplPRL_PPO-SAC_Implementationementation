@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Normal, Categorical
+import numpy as np
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
-import numpy as np
+import gym
 
 class PPOMemory:
     def __init__(self):
@@ -27,9 +28,6 @@ class PPOMemory:
         self.values = []
 
     def generate_mini_batches(self, states, actions, returns, log_probs, values, advantages, batch_size, num_epochs):
-        """
-        Returns mini-batches of states, actions, returns, log_probs, values, and advantages as tensors.
-        """
         n_states = len(states)
         batch_start = np.arange(0, n_states, batch_size)
         indices = np.arange(n_states, dtype=np.int64)
@@ -46,24 +44,19 @@ class PPOMemory:
                 batch_advantages = advantages[batch].clone().detach()
                 yield batch_states, batch_actions, batch_returns, batch_log_probs, batch_values, batch_advantages
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.distributions import Normal, Categorical
-import numpy as np
 
-    
 class ContinuousActor(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim = 32):
+    def __init__(self, in_dim, out_dim, hidden_dim1 = 128, hidden_dim2=128):
         super(ContinuousActor, self).__init__()
         
-        self.hidden_layer = nn.Linear(in_dim, hidden_dim)
-        self.mu_layer = nn.Linear(hidden_dim, out_dim)
-        self.log_std_layer = nn.Linear(hidden_dim, out_dim)
+        self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
+        self.hidden_layer2 = nn.Linear(hidden_dim1, hidden_dim2)
+        self.mu_layer = nn.Linear(hidden_dim2, out_dim)
+        self.log_std_layer = nn.Linear(hidden_dim2, out_dim)
 
     def forward(self, state):
-        x = F.relu(self.hidden_layer(state))
+        x = F.relu(self.hidden_layer1(state))
+        x = F.relu(self.hidden_layer2(x))
         mu = torch.tanh(self.mu_layer(x))
         log_std = torch.tanh(self.log_std_layer(x))
         std = torch.exp(log_std)
@@ -73,32 +66,37 @@ class ContinuousActor(nn.Module):
         return action, dist
     
 class DiscreteActor(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim = 32):
+    def __init__(self, in_dim, out_dim, hidden_dim1=128, hidden_dim2=128):
         super(DiscreteActor, self).__init__()
         
-        self.hidden_layer = nn.Linear(in_dim, hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, out_dim)
+        self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
+        self.hidden_layer2 = nn.Linear(hidden_dim1, hidden_dim2)
+        self.output_layer = nn.Linear(hidden_dim2, out_dim)
 
     def forward(self, state):
-        x = torch.relu(self.hidden_layer(state))
+        x = torch.relu(self.hidden_layer1(state))
+        x = torch.relu(self.hidden_layer2(x))
         x = self.output_layer(x)
-        probs = F.softmax(x, dim=1)
+        probs = torch.softmax(x, dim=1)
         dist = Categorical(probs)
         action = dist.sample()
         return action, dist
 
 
 class Critic(nn.Module):
-    def __init__(self, in_dim):
+    def __init__(self, in_dim, hidden_dim1=64, hidden_dim2=64):
         super(Critic, self).__init__()
 
-        self.hidden = nn.Linear(in_dim, 64)
-        self.out = nn.Linear(64, 1)
+        self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
+        self.hidden_layer2 = nn.Linear(hidden_dim1, hidden_dim2)
+        self.out = nn.Linear(hidden_dim2, 1)
 
     def forward(self, state):
-        x = F.relu(self.hidden(state))
+        x = torch.relu(self.hidden_layer1(state))
+        x = torch.relu(self.hidden_layer2(x))
         value = self.out(x)
         return value
+
 
 def init_weights(m):
     if type(m) in (nn.Linear, nn.Conv2d):
@@ -110,7 +108,7 @@ def init_weights(m):
 class PPOAgent():
     def __init__(self, make_env, continuous: bool, obs_dim: int, act_dim: int, gamma: float,
                  lamda: float, entropy_coef: float, epsilon: float, vf_coef: float, rollout_len: int,
-                 total_rollouts: int, num_epochs: int, batch_size: int,plot_interval: int = 10, 
+                 total_rollouts: int, num_epochs: int, batch_size: int, plot_interval: int = 10, 
                  solved_reward: int = None, actor_lr: float = 3e-4, critic_lr: float = 1e-3):
         
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -138,6 +136,10 @@ class PPOAgent():
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
+        # Learning Rate Schedulers
+        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=100, gamma=0.9)
+        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=100, gamma=0.9)
+
         # Memory
         self.memory = PPOMemory()
         self.scores = []
@@ -145,7 +147,6 @@ class PPOAgent():
         # Evaluation and plotting
         self.solved_reward = solved_reward
         self.plot_interval = plot_interval
-
 
     def select_action(self, state):
         """
@@ -163,7 +164,6 @@ class PPOAgent():
 
         return list(action.detach().cpu().numpy()).pop()
 
-            
     def step(self, action):
         """
         Make action in environment chosen by current policy,
@@ -181,7 +181,6 @@ class PPOAgent():
         self.memory.dones[-1] = 1 - done  # Use 1 - done to correctly mask future rewards and values for the advantage calculation
 
         return next_state, reward, done
-
 
     def train(self):
         """
@@ -210,7 +209,7 @@ class PPOAgent():
                 self._plot_train_history()
 
             # If we have achieved the desired score - stop the process.
-            if self.solved_reward is not None and np.mean(self.scores[-10:]) > self.solved_reward:
+            if self.solved_reward is not None and np.mean(self.scores[-100:]) >= self.solved_reward:
                 print("GAME COMPLETED")
                 break
 
@@ -220,7 +219,6 @@ class PPOAgent():
             self._update_weights()
 
         self.env.close()
-
 
     def _update_weights(self):
 
@@ -271,15 +269,20 @@ class PPOAgent():
             # Perform optimization steps
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)  # Gradient Clipping
             self.actor_optimizer.step()
 
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)  # Gradient Clipping
             self.critic_optimizer.step()
+
+        # Step the learning rate schedulers
+        self.actor_scheduler.step()
+        self.critic_scheduler.step()
 
         # Clear memory
         self.memory.clear_memory()
-
 
     def _plot_train_history(self):
         data = [self.scores]
@@ -298,4 +301,3 @@ class PPOAgent():
 
         plt.tight_layout()
         plt.show()
-
