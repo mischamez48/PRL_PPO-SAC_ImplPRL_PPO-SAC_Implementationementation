@@ -55,8 +55,8 @@ class ContinuousActor(nn.Module):
         self.log_std_layer = nn.Linear(hidden_dim2, out_dim)
 
     def forward(self, state):
-        x = F.relu(self.hidden_layer1(state))
-        x = F.relu(self.hidden_layer2(x))
+        x = torch.relu(self.hidden_layer1(state))
+        x = torch.relu(self.hidden_layer2(x))
         mu = torch.tanh(self.mu_layer(x))
         log_std = torch.tanh(self.log_std_layer(x))
         std = torch.exp(log_std)
