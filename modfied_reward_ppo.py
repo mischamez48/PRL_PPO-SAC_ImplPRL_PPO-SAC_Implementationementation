@@ -176,7 +176,7 @@ class PPOAgent():
         # # Add additional reward for moving forward
         # position = next_state[0]
         # if position > -0.5:
-        #     reward += 1
+        #     reward += 2
 
         # Convert elements to a torch tensor and add a batch dimension
         next_state = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(self.device)
@@ -250,8 +250,6 @@ class PPOAgent():
         log_probs = torch.cat(self.memory.probs).detach()
         values = torch.cat(self.memory.values).detach()
         advantages = returns - values[:-1]
-        #Advantage Normalization:
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         mini_batches = self.memory.generate_mini_batches(
             states, actions, returns, log_probs, values, advantages, 
