@@ -46,7 +46,7 @@ class PPOMemory:
 
 
 class ContinuousActor(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim1 = 64, hidden_dim2=64):
+    def __init__(self, in_dim, out_dim, hidden_dim1=64, hidden_dim2=64):
         super(ContinuousActor, self).__init__()
         
         self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
@@ -61,7 +61,7 @@ class ContinuousActor(nn.Module):
         log_std = torch.tanh(self.log_std_layer(x))
         std = torch.exp(log_std)
         dist = Normal(mu, std)
-        action = dist.sample()
+        action = dist.rsample()
 
         return action, dist
     
@@ -86,7 +86,7 @@ class DiscreteActor(nn.Module):
 
 class Critic(nn.Module):
     #64 and 32 for mountain
-    def __init__(self, in_dim, hidden_dim1=64, hidden_dim2=64):
+    def __init__(self, in_dim, hidden_dim1=256, hidden_dim2=256):
         super(Critic, self).__init__()
 
         self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
@@ -142,9 +142,12 @@ class PPOAgent():
         self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=100, gamma=0.9)
         self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=100, gamma=0.9)
 
+
         # Memory
         self.memory = PPOMemory()
         self.scores = []
+        self.actor_losses = []  # Store actor losses
+        self.critic_losses = []  # Store critic losses
 
         # Evaluation and plotting
         self.solved_reward = solved_reward
@@ -191,12 +194,13 @@ class PPOAgent():
 
     def train(self):
         """
-        Interaction process in environment for collect trajectory,
+        Interaction process in environment to collect trajectory,
         train process by agent nets after each rollout.
         """
         score = 0
         state = self.env.reset()
         state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+        episode_count = 0  # To track the number of episodes
 
         for n_step in range(self.total_rollouts):
             for _ in range(self.rollout_len):
@@ -211,20 +215,22 @@ class PPOAgent():
                     score = 0
                     state = self.env.reset()
                     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+                    episode_count += 1  # Increment the episode count
+
+                    if episode_count >= 50:  # Check if 100 episodes are completed
+                        print("Training completed after 100 episodes")
+                        self.env.close()
+                        return
 
             if n_step % self.plot_interval == 0:
-                self._plot_train_history()
-
-            # If we have achieved the desired score - stop the process.
-            if self.solved_reward is not None and np.mean(self.scores[-100:]) >= self.solved_reward:
-                print("GAME COMPLETED")
-                break
+                self._plot_train_history(window=200)
 
             value = self.critic(next_state)
             self.memory.values.append(value)
             # Update policy
             self._update_weights()
 
+        print("Training completed after reaching the total rollouts")
         self.env.close()
 
     def _update_weights(self):
@@ -275,6 +281,10 @@ class PPOAgent():
             cur_value = self.critic(state)
             critic_loss = self.vf_coef * (return_ - cur_value).pow(2).mean()  # Multiply critic loss by vf_coef
 
+            # Store losses
+            self.actor_losses.append(actor_loss.item())
+            self.critic_losses.append(critic_loss.item())
+
             # Perform optimization steps
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
@@ -287,26 +297,48 @@ class PPOAgent():
             self.critic_optimizer.step()
 
         # Step the learning rate schedulers
-        self.actor_scheduler.step()
-        self.critic_scheduler.step()
+        #self.actor_scheduler.step()
+        #self.critic_scheduler.step()
 
         # Clear memory
         self.memory.clear_memory()
 
-    def _plot_train_history(self):
-        data = [self.scores]
-        
+    def _plot_train_history(self, window=200):
+        data = [self.scores, self.actor_losses, self.critic_losses]
+
         # Ensure there are at least 10 elements in the scores for calculating the mean of the last 10
         score_label = f"score {int(np.mean(self.scores[-10:]))}" if len(self.scores) >= 10 else "score"
+
+        labels = [score_label, "actor_loss", "critic_loss"]
+
+        # Calculate the mean of actor_loss and critic_loss over a sliding window of the specified size
+        if len(self.actor_losses) >= window:
+            actor_mean = [np.mean(self.actor_losses[i:i+window]) for i in range(0, len(self.actor_losses), window)]
+        else:
+            actor_mean = [np.mean(self.actor_losses)]
         
-        labels = [score_label]
+        if len(self.critic_losses) >= window:
+            critic_mean = [np.mean(self.critic_losses[i:i+window]) for i in range(0, len(self.critic_losses), window)]
+        else:
+            critic_mean = [np.mean(self.critic_losses)]
+
+        mean_data = [actor_mean, critic_mean]
+        mean_labels = ["Mean Actor Loss", "Mean Critic Loss"]
 
         clear_output(True)
-        fig, ax = plt.subplots(1, 1, figsize=(8, 4))  # Adjusted the figsize for better spacing
-        ax.plot(data[0])
-        ax.set_title(labels[0])
-        ax.set_xlabel("Episodes")
-        ax.set_ylabel("Value")
+        fig, axes = plt.subplots(3, 1, figsize=(8, 12))  # Create 3 subplots
+
+        for i, ax in enumerate(axes[:2]):
+            ax.plot(mean_data[i])
+            ax.set_title(mean_labels[i])
+            ax.set_xlabel("Steps")
+            ax.set_ylabel("Value")
+
+        # Plot the original scores without window averaging
+        axes[2].plot(data[0])
+        axes[2].set_title(labels[0])
+        axes[2].set_xlabel("Episodes")
+        axes[2].set_ylabel("Value")
 
         plt.tight_layout()
         plt.show()
