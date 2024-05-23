@@ -90,7 +90,7 @@ class DiscreteActor(nn.Module):
 
 class Critic(nn.Module):
     #64 and 32 for mountain
-    def __init__(self, in_dim, hidden_dim1=256, hidden_dim2=256):
+    def __init__(self, in_dim, hidden_dim1=64, hidden_dim2=64):
         super(Critic, self).__init__()
 
         self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
@@ -221,10 +221,10 @@ class PPOAgent():
                     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
                     episode_count += 1  # Increment the episode count
 
-                    # if episode_count >= 300:
-                    #     print("Training completed after 100 episodes")
-                    #     self.env.close()
-                    #     return
+                    if episode_count >= 300:
+                        print("Training completed after 100 episodes")
+                        self.env.close()
+                        return
 
             if n_step % self.plot_interval == 0:
                 self._plot_train_history(window=200)
