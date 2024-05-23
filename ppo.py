@@ -221,7 +221,7 @@ class PPOAgent():
                     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
                     episode_count += 1  # Increment the episode count
 
-                    if episode_count >= 300:
+                    if episode_count >= 100:
                         print("Training completed after 100 episodes")
                         self.env.close()
                         return
