@@ -31,9 +31,9 @@ class PPOMemory:
         n_states = len(states)
         batch_start = np.arange(0, n_states, batch_size)
         indices = np.arange(n_states, dtype=np.int64)
-
-        for _ in range(num_epochs):
-            np.random.shuffle(indices)
+        #we need to update the policy and value function using multiple epochs of training on mini-batches of data
+        for _ in range(num_epochs): #The number of times the entire dataset will be iterated over during training.
+            np.random.shuffle(indices) #ensure that the data is mixed differently in each epoch.
             batches = [indices[i:i + batch_size] for i in batch_start]
             for batch in batches:
                 batch_states = states[batch].clone().detach()
@@ -43,7 +43,11 @@ class PPOMemory:
                 batch_values = values[batch].clone().detach()
                 batch_advantages = advantages[batch].clone().detach()
                 yield batch_states, batch_actions, batch_returns, batch_log_probs, batch_values, batch_advantages
-
+                # 2 IMPORTANT remarks: (discovered and looked for when terminal sent warning flags)
+                #   - clone is used to create a copy of the tensor, so as not to affect the original data.
+                #   - detaches the tensor from the computation graph, meaning no gradients will be computed 
+                #     for these operations. We only want to compute gradients during 
+                #     backpropagation step in the training step, not when preparing mini-batches.
 
 class ContinuousActor(nn.Module):
     def __init__(self, in_dim, out_dim, hidden_dim1=64, hidden_dim2=64):
@@ -217,10 +221,10 @@ class PPOAgent():
                     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
                     episode_count += 1  # Increment the episode count
 
-                    if episode_count >= 50:  # Check if 100 episodes are completed
-                        print("Training completed after 100 episodes")
-                        self.env.close()
-                        return
+                    # if episode_count >= 300:
+                    #     print("Training completed after 100 episodes")
+                    #     self.env.close()
+                    #     return
 
             if n_step % self.plot_interval == 0:
                 self._plot_train_history(window=200)
@@ -256,14 +260,15 @@ class PPOAgent():
         log_probs = torch.cat(self.memory.probs).detach()
         values = torch.cat(self.memory.values).detach()
         advantages = returns - values[:-1]
-        #Advantage Normalization:
+        #Advantage Normalizatio, it seems to help in some training, so I kept it:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         mini_batches = self.memory.generate_mini_batches(
             states, actions, returns, log_probs, values, advantages, 
             self.batch_size, self.num_epochs
         )
-
+        #Each iteration of this loop fetches the next mini-batch from the generator,
+        #allowing the training code to process the data in chunks rather than all at once.  
         for state, action, return_, old_log_prob, old_value, advantage in mini_batches:
             _, dist = self.actor(state)
             new_log_prob = dist.log_prob(action)
@@ -275,11 +280,11 @@ class PPOAgent():
             # Compute actor loss
             weighted_probs = advantage * prob_ratio
             weighted_clipped_probs = torch.clamp(prob_ratio, 1. - self.epsilon, 1. + self.epsilon) * advantage
-            actor_loss = -torch.mean(torch.min(weighted_probs, weighted_clipped_probs)) - self.entropy_coef * entropy
+            actor_loss = -torch.mean(torch.min(weighted_probs, weighted_clipped_probs)) - self.entropy_coef * entropy #we are doing gradient ascent not descent on the policy, we want to maximize
             
             # Compute critic loss
             cur_value = self.critic(state)
-            critic_loss = self.vf_coef * (return_ - cur_value).pow(2).mean()  # Multiply critic loss by vf_coef
+            critic_loss = self.vf_coef * (return_ - cur_value).pow(2).mean() #here we minimize, for gradient descent now
 
             # Store losses
             self.actor_losses.append(actor_loss.item())
@@ -288,20 +293,22 @@ class PPOAgent():
             # Perform optimization steps
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)  # Gradient Clipping
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
             self.actor_optimizer.step()
 
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)  # Gradient Clipping
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)
             self.critic_optimizer.step()
 
         # Step the learning rate schedulers
-        #self.actor_scheduler.step()
-        #self.critic_scheduler.step()
+        self.actor_scheduler.step()
+        self.critic_scheduler.step()
 
         # Clear memory
         self.memory.clear_memory()
+
+        
 
     def _plot_train_history(self, window=200):
         data = [self.scores, self.actor_losses, self.critic_losses]
