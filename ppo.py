@@ -1,3 +1,10 @@
+"""
+Code is primarly based on this github : https://github.com/mandrakedrink/PPO-pytorch,
+in order to get the structure going quickly, but the content is not copy-past, unless explictly saif,
+I took what i felt was good and added on top off it and added the parts that I already coded on my first
+"not sucessful" try
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -103,12 +110,23 @@ class Critic(nn.Module):
         value = self.out(x)
         return value
 
+"""
+The argument m is expected to be a layer of a neural network. The weights are initialized using the 
+orthogonal initialization method. This helps maintain the variance 
+of the weights and gradients across layers, which can lead to more stable and faster 
+training. The np.sqrt(float(2)) factor scales the initialized weights. This scaling factor 
+is often used to help maintain the variance of the activations across layers, following 
+principles from He initialization. It is not necessary to initialize weights our selves, pytroch
+does that for us, but sometime the default initialization may not always be the best choice, and
+here i take the step followed in the github, and it seems to work, so i leave it.
+"""
 
-def init_weights(m):
+def init_weights(m): #this is taken as it is from the github, no modification
     if type(m) in (nn.Linear, nn.Conv2d):
         nn.init.orthogonal_(m.weight.data, np.sqrt(float(2)))
         if m.bias is not None:
             m.bias.data.fill_(0)
+
 
 
 class PPOAgent():
