@@ -143,8 +143,8 @@ class PPOAgent():
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
         # Learning Rate Schedulers
-        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=100, gamma=0.9)
-        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=100, gamma=0.9)
+        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=10, gamma=0.9)
+        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=10, gamma=0.9)
 
 
         # Memory
@@ -181,9 +181,9 @@ class PPOAgent():
         next_state, reward, done, _ = self.env.step(action)
 
         # Add additional reward for moving forward
-        position = next_state[0]
-        if position > -0.2:
-            reward += 2
+        # position = next_state[0]
+        # if position > -0.2:
+        #     reward += 2
 
         # Convert elements to a torch tensor and add a batch dimension
         next_state = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(self.device)
@@ -221,7 +221,7 @@ class PPOAgent():
                     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
                     episode_count += 1  # Increment the episode count
 
-                    if episode_count >= 200:
+                    if episode_count >= 300:
                         print("Training completed after 100 episodes")
                         self.env.close()
                         return
