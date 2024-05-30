@@ -1,3 +1,10 @@
+"""
+Code is primarly based on this github : https://github.com/mandrakedrink/PPO-pytorch,
+in order to get the structure going quickly, but the content is not copy-past, unless explictly saif,
+I took what i felt was good and added on top off it and added the parts that I already coded on my first
+"not sucessful" try
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -50,7 +57,7 @@ class PPOMemory:
                 #     backpropagation step in the training step, not when preparing mini-batches.
 
 class ContinuousActor(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim1=64, hidden_dim2=64):
+    def __init__(self, in_dim, out_dim, hidden_dim1=128, hidden_dim2=128):
         super(ContinuousActor, self).__init__()
         
         self.hidden_layer1 = nn.Linear(in_dim, hidden_dim1)
@@ -103,12 +110,23 @@ class Critic(nn.Module):
         value = self.out(x)
         return value
 
+"""
+The argument m is expected to be a layer of a neural network. The weights are initialized using the 
+orthogonal initialization method. This helps maintain the variance 
+of the weights and gradients across layers, which can lead to more stable and faster 
+training. The np.sqrt(float(2)) factor scales the initialized weights. This scaling factor 
+is often used to help maintain the variance of the activations across layers, following 
+principles from He initialization. It is not necessary to initialize weights our selves, pytroch
+does that for us, but sometime the default initialization may not always be the best choice, and
+here i take the step followed in the github, and it seems to work, so i leave it.
+"""
 
-def init_weights(m):
+def init_weights(m): #this is taken as it is from the github, no modification
     if type(m) in (nn.Linear, nn.Conv2d):
         nn.init.orthogonal_(m.weight.data, np.sqrt(float(2)))
         if m.bias is not None:
             m.bias.data.fill_(0)
+
 
 
 class PPOAgent():
@@ -143,8 +161,8 @@ class PPOAgent():
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
         # Learning Rate Schedulers
-        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=100, gamma=0.9)
-        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=100, gamma=0.9)
+        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=10, gamma=0.9)
+        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=10, gamma=0.9)
 
 
         # Memory
@@ -180,10 +198,10 @@ class PPOAgent():
         """
         next_state, reward, done, _ = self.env.step(action)
 
-        # # Add additional reward for moving forward
+        # Add additional reward for moving forward
         # position = next_state[0]
-        # if position > -0.5:
-        #     reward += 1
+        # if position > -0.2:
+        #     reward += 2
 
         # Convert elements to a torch tensor and add a batch dimension
         next_state = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(self.device)
@@ -221,7 +239,7 @@ class PPOAgent():
                     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
                     episode_count += 1  # Increment the episode count
 
-                    if episode_count >= 100:
+                    if episode_count >= 300:
                         print("Training completed after 100 episodes")
                         self.env.close()
                         return
