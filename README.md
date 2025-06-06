@@ -63,7 +63,7 @@ gym
 
 ## 📄 Documentation
 
-- `Rapport_RL_2024.pdf` - Comprehensive project report (French)
+- `Rapport_RL_2024.pdf` - Comprehensive project report
 - `OVERALL HYPERPARAMETERS.pdf` - Hyperparameter documentation
 - `Reinforcement_Learning_Poster_Guillaume_Spahr_Mischa_Mez(2024).pdf` - Research poster
 
